@@ -59,8 +59,11 @@ def make_parser():
         action='append', dest='filter_labels', default=[],
     )
     args.add_argument(
-        'repository',
-        help='Repository to retrieve issues from (e.g., rcbops/rpc-openstack)',
+        '--repo',
+        help='Repository to retrieve issues from (e.g., rcbops/rpc-openstack). '
+             'Multiple invocations of this flag mean issues from all repos will '
+             'be collated into a single output file.',
+        action='append', dest='repositories', default=[],
     )
     return args
 
@@ -174,12 +177,17 @@ def normalize_sequential_dates(issue_list):
 
     return issue_list
 
-
-def write_rows(filename, headers, fields, issues, date_format, include_prs,
-               skip_normalization, additional_labels, filter_labels=None):
-    with open(filename, 'w') as fd:
+def write_headers(filename, headers):
+    with open(filename, 'w+') as fd:
         writer = csv.writer(fd)
         writer.writerow(headers)
+        fd.close()
+
+
+def write_rows(filename, fields, issues, date_format, include_prs,
+               skip_normalization, additional_labels, filter_labels=None):
+    with open(filename, 'a+') as fd:
+        writer = csv.writer(fd)
         if filter_labels:
             filter_labels = set(filter_labels)
         for issue in issues:
@@ -194,7 +202,7 @@ def write_rows(filename, headers, fields, issues, date_format, include_prs,
             writer.writerow(format_dates(issue_data.values(), date_format))
 
 
-def set_headers(repo, labels=None):
+def set_headers(labels=None):
     headers = [
         'ID', 'Link', 'Name', 'Backlog', 'Triage', 'Investigate', 'Approved',
         'Doing', 'Needs Review (Ready)', 'Needs Review (Doing)',
@@ -206,25 +214,23 @@ def set_headers(repo, labels=None):
         headers.extend('Label: ' + label.name for label in labels)
     return headers
 
+def get_all_labels(repositories, token):
+    labels = []
+    for repository in repositories:
+        repo_owner, repo_name = repository.split('/', 1)
+        repo = get_repo(repo_owner, repo_name, token)
+        repo_labels = get_repo_labels(repo)
+        for repo_label in repo_labels:
+           if repo_label.name not in [l.name for l in labels]:
+                labels.append(repo_label)
+    return sorted((labels), key = lambda l: l.name)
+
+def get_repo_labels(repo):
+    return sorted((label for label in repo.labels()),
+                  key=lambda l: l.name)
 
 def main():
-    parser = make_parser()
-    token = os.environ.get('GITHUB_TOKEN')
-    if token is None:
-        parser.exit(status=1,
-                    message='No GITHUB_TOKEN specified by the user\n')
-    args = parser.parse_args()
 
-    repo_owner, repo_name = args.repository.split('/', 1)
-    repo = get_repo(repo_owner, repo_name, token)
-
-    if args.include_labels:
-        additional_labels = sorted((label for label in repo.labels()),
-                                   key=lambda l: l.name)
-    else:
-        additional_labels = []
-
-    headers = set_headers(repo, additional_labels)
     fields = [
         'number',
         'html_url',
@@ -245,14 +251,39 @@ def main():
         'Milestone'
     ]
 
-    write_rows(
-        filename=args.output_file,
-        headers=headers,
-        fields=fields,
-        issues=issues_for(repo, state=args.issue_state),
-        date_format=args.date_format,
-        include_prs=args.include_pull_requests,
-        skip_normalization=args.skip_date_normalization,
-        additional_labels=additional_labels,
-        filter_labels=args.filter_labels
+    parser = make_parser()
+    token = os.environ.get('GITHUB_TOKEN')
+    if token is None:
+        parser.exit(status=1,
+                    message='No GITHUB_TOKEN specified by the user\n')
+    args = parser.parse_args()
+
+    filename = args.output_file
+    repositories = args.repositories
+
+    if args.include_labels:
+        additional_labels = get_all_labels(repositories, token)
+    else:
+        additional_labels = []
+
+    headers = set_headers(additional_labels)
+    write_headers(
+        filename=filename,
+        headers=headers
     )
+
+    ### repo loop ###
+    for repository in repositories:
+        repo_owner, repo_name = repository.split('/', 1)
+        repo = get_repo(repo_owner, repo_name, token)
+
+        write_rows(
+            filename=filename,
+            fields=fields,
+            issues=issues_for(repo, state=args.issue_state),
+            date_format=args.date_format,
+            include_prs=args.include_pull_requests,
+            skip_normalization=args.skip_date_normalization,
+            additional_labels=additional_labels,
+            filter_labels=args.filter_labels
+        )
