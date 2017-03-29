@@ -2,7 +2,6 @@ from __future__ import absolute_import
 
 import argparse
 import collections
-import datetime
 import csv
 import itertools
 import os
@@ -16,12 +15,6 @@ def make_parser():
     args = argparse.ArgumentParser(
         description='Convert GitHub issues to a CSV file'
     )
-    # args.add_argument(
-    #     '--fields', help='Names of data fields to take from an Issue'
-    # )
-    # args.add_argument(
-    #     '--headers', help='Names of the column headers'
-    # )
     args.add_argument(
         '--issue-state', help='Whether issues are closed, open, or both',
         choices=['open', 'closed', 'all'], default='all',
@@ -60,15 +53,16 @@ def make_parser():
     )
     args.add_argument(
         '--repo',
-        help='Repository to retrieve issues from (e.g., rcbops/rpc-openstack). '
-             'Multiple invocations of this flag mean issues from all repos will '
-             'be collated into a single output file.',
-        action='append', dest='repositories', default=[],
+        help='Repository to retrieve issues from (e.g. rcbops/rpc-openstack). '
+             'Multiple invocations of this flag mean issues from all repos '
+             'will be collated into a single output file.',
+        action='append', dest='repositories', required=True, default=[],
     )
     return args
 
 
-def get_repo(owner, name, token, cache_path='~/.gh2/cache'):
+def get_repo(repository, token, cache_path='~/.gh2/cache'):
+    owner, name = repository.split('/', 1)
     cache_path = os.path.expanduser(cache_path)
 
     gh = github3.GitHub(token=token)
@@ -177,11 +171,11 @@ def normalize_sequential_dates(issue_list):
 
     return issue_list
 
+
 def write_headers(filename, headers):
     with open(filename, 'w+') as fd:
         writer = csv.writer(fd)
         writer.writerow(headers)
-        fd.close()
 
 
 def write_rows(filename, fields, issues, date_format, include_prs,
@@ -214,20 +208,24 @@ def set_headers(labels=None):
         headers.extend('Label: ' + label.name for label in labels)
     return headers
 
-def get_all_labels(repositories, token):
-    labels = []
-    for repository in repositories:
-        repo_owner, repo_name = repository.split('/', 1)
-        repo = get_repo(repo_owner, repo_name, token)
-        repo_labels = get_repo_labels(repo)
-        for repo_label in repo_labels:
-           if repo_label.name not in [l.name for l in labels]:
-                labels.append(repo_label)
-    return sorted((labels), key = lambda l: l.name)
 
-def get_repo_labels(repo):
-    return sorted((label for label in repo.labels()),
-                  key=lambda l: l.name)
+def get_all_labels(repositories):
+    labels = []
+    for repo in repositories:
+        repo_labels = [label for label in repo.labels()]
+        for repo_label in repo_labels:
+            if repo_label.name not in [l.name for l in labels]:
+                labels.append(repo_label)
+    return sorted(labels, key=lambda l: l.name)
+
+
+def get_token():
+    token = os.environ.get('GITHUB_TOKEN')
+    if token is None:
+        parser.exit(status=1,
+                    message='No GITHUB_TOKEN specified by the user\n')
+    return token
+
 
 def main():
 
@@ -252,31 +250,26 @@ def main():
     ]
 
     parser = make_parser()
-    token = os.environ.get('GITHUB_TOKEN')
-    if token is None:
-        parser.exit(status=1,
-                    message='No GITHUB_TOKEN specified by the user\n')
     args = parser.parse_args()
-
+    token = get_token()
     filename = args.output_file
     repositories = args.repositories
 
+    repos = [get_repo(repo, token) for repo in repositories]
     if args.include_labels:
-        additional_labels = get_all_labels(repositories, token)
+        additional_labels = get_all_labels(repos)
     else:
         additional_labels = []
 
     headers = set_headers(additional_labels)
+
     write_headers(
         filename=filename,
         headers=headers
     )
 
-    ### repo loop ###
-    for repository in repositories:
-        repo_owner, repo_name = repository.split('/', 1)
-        repo = get_repo(repo_owner, repo_name, token)
-
+    # repo loop
+    for repo in repos:
         write_rows(
             filename=filename,
             fields=fields,
