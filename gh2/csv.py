@@ -83,15 +83,16 @@ def label_events_for(issue):
             if event.event == 'labeled')
 
 
-def issue_to_dict(fields, issue, additional_labels):
+def issue_to_dict(fields, issue, additional_label_names):
     retrievers = fields_to_callables(fields)
     base_attributes = (retriever(issue) for retriever in retrievers)
-    issue_labels = list(issue.labels())
-    label_attributes = (label in issue_labels for label in additional_labels)
+    issue_label_names = [label.name for label in issue.labels()]
+    label_attributes = (label in issue_label_names
+                        for label in additional_label_names)
     attributes = itertools.chain(base_attributes, label_attributes)
     return collections.OrderedDict(
         (field, attr.encode('utf-8') if hasattr(attr, 'encode') else attr)
-        for field, attr in zip(itertools.chain(fields, additional_labels),
+        for field, attr in zip(itertools.chain(fields, additional_label_names),
                                attributes)
     )
 
@@ -179,7 +180,7 @@ def write_headers(filename, headers):
 
 
 def write_rows(filename, fields, issues, date_format, include_prs,
-               skip_normalization, additional_labels, filter_labels=None):
+               skip_normalization, additional_label_names, filter_labels=None):
     with open(filename, 'a+') as fd:
         writer = csv.writer(fd)
         if filter_labels:
@@ -190,7 +191,7 @@ def write_rows(filename, fields, issues, date_format, include_prs,
             issue_labels = {l.name for l in issue.labels()}
             if filter_labels and not filter_labels.issubset(issue_labels):
                 continue
-            issue_data = issue_to_dict(fields, issue, additional_labels)
+            issue_data = issue_to_dict(fields, issue, additional_label_names)
             if not skip_normalization:
                 issue_data = normalize_sequential_dates(issue_data)
             writer.writerow(format_dates(issue_data.values(), date_format))
@@ -205,21 +206,18 @@ def set_headers(labels=None):
         'Milestone'
     ]
     if labels:
-        headers.extend('Label: ' + label.name for label in labels)
+        headers.extend('Label: ' + label for label in labels)
     return headers
 
 
-def get_all_labels(repositories):
-    labels = []
+def get_all_label_names(repositories):
+    labels = set()
     for repo in repositories:
-        repo_labels = [label for label in repo.labels()]
-        for repo_label in repo_labels:
-            if repo_label.name not in [l.name for l in labels]:
-                labels.append(repo_label)
-    return sorted(labels, key=lambda l: l.name)
+        labels.update(l.name for l in repo.labels())
+    return sorted(labels)
 
 
-def get_token():
+def get_token(parser):
     token = os.environ.get('GITHUB_TOKEN')
     if token is None:
         parser.exit(status=1,
@@ -251,17 +249,17 @@ def main():
 
     parser = make_parser()
     args = parser.parse_args()
-    token = get_token()
+    token = get_token(parser)
     filename = args.output_file
     repositories = args.repositories
 
     repos = [get_repo(repo, token) for repo in repositories]
     if args.include_labels:
-        additional_labels = get_all_labels(repos)
+        additional_label_names = get_all_label_names(repos)
     else:
-        additional_labels = []
+        additional_label_names = []
 
-    headers = set_headers(additional_labels)
+    headers = set_headers(additional_label_names)
 
     write_headers(
         filename=filename,
@@ -277,6 +275,6 @@ def main():
             date_format=args.date_format,
             include_prs=args.include_pull_requests,
             skip_normalization=args.skip_date_normalization,
-            additional_labels=additional_labels,
+            additional_label_names=additional_label_names,
             filter_labels=args.filter_labels
         )
